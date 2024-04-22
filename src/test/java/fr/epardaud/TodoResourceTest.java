@@ -357,6 +357,67 @@ public class TodoResourceTest {
                            "Foo", "Bar", "AppleUser", "apple@example.com", "q_session_apple");
     }
 
+    @Test
+    public void appleRevokeTest(){
+        // GIVEN a registered apple user
+        RenardeCookieFilter cookieFilter = new RenardeCookieFilter();
+        ValidatableResponse response = follow("/_renarde/security/login-apple", cookieFilter);
+        JsonPath json = response.statusCode(200)
+                .extract().body().jsonPath();
+        String code = json.get("code");
+        String state = json.get("state");
+
+        String location = given()
+                .when()
+                .filter(cookieFilter)
+                .formParam("state", state)
+                .formParam("code", code)
+                // can't follow redirects due to cookies
+                .redirects().follow(false)
+                // must be precise and not contain an encoding: probably needs fixing in the OIDC side
+                .contentType("application/x-www-form-urlencoded")
+                .log().ifValidationFails()
+                .post("/_renarde/security/oidc-success")
+                .then()
+                .log().ifValidationFails()
+                .statusCode(302)
+                .extract().header("Location");
+       follow(location.replace("https://", "http://"), cookieFilter)
+                .body(containsString("Complete registration for apple@example.com"));
+
+        // WHEN Revoke access
+        List<String> setCookieHeaderResp = given()
+                .when()
+                .filter(cookieFilter)
+                .redirects().follow(false)
+                .get("/_renarde/security/apple-revoke")
+                .then()
+                .statusCode(303)
+                .extract().headers()
+                .getValues("Set-Cookie");
+
+        // THEN Cookie is reset (no more QuarkusUser nor apple session)
+        String userLogoutCookie = setCookieHeaderResp.stream()
+                .filter(c -> c.startsWith("QuarkusUser="))
+                .findFirst()
+                .orElseThrow();
+        Assertions.assertEquals("QuarkusUser=;Version=1;Path=/;Max-Age=0", userLogoutCookie);
+        String userSessionCookie = setCookieHeaderResp.stream()
+                .filter(c -> c.startsWith("q_session_apple="))
+                .findFirst()
+                .orElseThrow();
+        Assertions.assertEquals("q_session_apple=;Version=1;Path=/;Max-Age=0", userSessionCookie);
+
+        // THEN Secure page will redirect to login
+        Assertions.assertTrue(
+                given().when().filter(cookieFilter)
+                        .redirects().follow(false)
+                        .get("/Todos/index")
+                        .then()
+                        .statusCode(302).extract().header("Location")
+                        .endsWith("Login/login"));
+    }
+
     private void finishConfirmation(RenardeCookieFilter cookieFilter, String confirmationCode, 
                                     String firstName, String lastName, String userName, String email,
                                     String cookieName) {
